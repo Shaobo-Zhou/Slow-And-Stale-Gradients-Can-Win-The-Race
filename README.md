@@ -1,0 +1,1 @@
+# Slow-And-Stale-Gradients-Can-Win-The-Race
