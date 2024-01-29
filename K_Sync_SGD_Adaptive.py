@@ -118,12 +118,7 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
                 print(f"Step: {step}, Time: {time}, Train Error: {train_error}")
                 model.train()
 
-            # Identify the K workers with the least remaining time
-            remaining_times = [shifted_exponential(scale, shift) for _ in range(num_workers)]
-            fastest_workers = np.argsort(remaining_times)[:K]
-            curr_iter_time = remaining_times[fastest_workers[K-1]]
-            time_counter += curr_iter_time
-            time += curr_iter_time
+
 
             # Update K if Adaptive is True and conditions are met
             if Adaptive and time_counter > t and K < num_workers:
@@ -139,6 +134,13 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
                 wstart_loss = current_loss
                 time_counter = 0
 
+            # Identify the K workers with the least remaining time
+            remaining_times = [shifted_exponential(scale, shift) for _ in range(num_workers)]
+            fastest_workers = np.argsort(remaining_times)[:K]
+            curr_iter_time = remaining_times[fastest_workers[K-1]]
+            time_counter += curr_iter_time
+            time += curr_iter_time
+
             # K fastest workers push their updates
             for worker in fastest_workers:
                 remaining_times[worker] = 0
@@ -153,7 +155,7 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
                 outputs = model(batch_x)
                 loss = criterion(outputs, batch_y) / K
                 loss.backward()
-                optimizer.step()
+            optimizer.step()
 
     # Final evaluation of the model
     model.eval()
@@ -173,15 +175,16 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
     return model, test_errors, train_errors, times
 
 # Compare the performances
+model_ada, test_errors_ada, train_errors_ada, times_ada = K_sync_SGD(K=1, Adaptive=True)
 model_2, test_errors_2, train_errors_2, times_2 = K_sync_SGD(K=2)
 model_4, test_errors_4, train_errors_4, times_4 = K_sync_SGD(K=4)
 model_8, test_errors_8, train_errors_8, times_8 = K_sync_SGD(K=8)
-model_ada, test_errors_ada, train_errors_ada, times_ada = K_sync_SGD(K=1, Adaptive=True)
 
+
+plt.plot(times_ada, test_errors_ada, label='AdaSync')
 plt.plot(times_8, test_errors_8, label='K=8')
 plt.plot(times_4, test_errors_4, label='K=4')
 plt.plot(times_2, test_errors_2, label='K=2')
-plt.plot(times_ada, test_errors_ada, label='AdaSync')
 plt.xlabel('Training Time (seconds)')
 plt.ylabel('Test Error')
 plt.title('Test Error vs Training Time')
