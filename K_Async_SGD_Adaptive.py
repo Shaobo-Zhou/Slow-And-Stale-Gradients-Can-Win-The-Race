@@ -17,8 +17,8 @@ print(device)
 def grayscale_transform():
     return transforms.Compose([
         transforms.ToTensor(),
-        transforms.Lambda(lambda x: 0.2989 * x[0] + 0.5870 * x[1] + 0.114 * x[2]),
-        transforms.Lambda(lambda x: x.unsqueeze(0)),  # Add channel dimension
+        #transforms.Lambda(lambda x: 0.2989 * x[0] + 0.5870 * x[1] + 0.114 * x[2]),
+        #transforms.Lambda(lambda x: x.unsqueeze(0)),  # Add channel dimension
         transforms.Normalize((0.5,), (0.5,))
     ])
 
@@ -47,24 +47,24 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=Fa
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
-        self.conv1 = nn.Conv2d(1, 6, 5)  # Input channels: 3, Output channels: 6, Kernel size: 5
-        self.pool = nn.MaxPool2d(2, 2)   # Max pooling with kernel size 2 and stride 2
-        self.conv2 = nn.Conv2d(6, 16, 5) # Input channels: 6, Output channels: 16, Kernel size: 5
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)  # Flattened size: 16*5*5, Output size: 120
-        self.fc2 = nn.Linear(120, 84)    # Input size: 120, Output size: 84
-        self.fc3 = nn.Linear(84, 10)      # Input size: 84, Output size: 3 (number of classes)
+        self.conv1 = nn.Conv2d(3, 6, 5)  
+        self.pool = nn.MaxPool2d(2, 2)   
+        self.conv2 = nn.Conv2d(6, 16, 5) 
+        self.fc1 = nn.Linear(16 * 5 * 5, 120)  
+        self.fc2 = nn.Linear(120, 84)    
+        self.fc3 = nn.Linear(84, 10)      
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)  # Flatten the tensor
+        x = x.view(-1, 16 * 5 * 5)  
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
 
 
-def K_async_SGD(K, num_steps=200000, t=60, time_budget=200, lr=0.01, scale=0.02, shift=0.0, evaluation_interval=300, Adaptive=False):
+def K_async_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, shift=0.0, evaluation_interval=300, Adaptive=False):
     # Initialize model, criterion, optimizer
     K0 = K
     model = CNN().to(device)
@@ -154,8 +154,8 @@ def K_async_SGD(K, num_steps=200000, t=60, time_budget=200, lr=0.01, scale=0.02,
 
                     stale_gradients[worker] = None
 
-                # Accumulate all the gradients from the current iteration, then update the model parameters
-                optimizer.step()
+            # Accumulate all the gradients from the current iteration, then update the model parameters
+            optimizer.step()
 
             # Compute new stale gradients for stale workers
             for worker in stale_workers:
@@ -176,7 +176,7 @@ def K_async_SGD(K, num_steps=200000, t=60, time_budget=200, lr=0.01, scale=0.02,
                 # Perform the update
                 optimizer.zero_grad()
                 outputs = model(batch_x)
-                loss = criterion(outputs, batch_y) / K
+                loss = criterion(outputs, batch_y) 
                 loss.backward()
                 # Store the stale gradients
                 current_gradients = {name: param.grad.clone() for name, param in model.named_parameters()}
@@ -222,5 +222,4 @@ plt.xlabel('Training Time (seconds)')
 plt.ylabel('Test Error')
 plt.title('Test Error vs Training Time')
 plt.legend()
-plt.show()
-
+plt.show() 
