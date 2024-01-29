@@ -209,15 +209,15 @@ def K_async_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02,
     return model, test_errors, train_errors, times
 
 # Compare the performances
+model_ada, test_errors_ada, train_errors_ada, times_ada = K_async_SGD(K=1, Adaptive=True)
 model_2, test_errors_2, train_errors_2, times_2 = K_async_SGD(K=2)
 model_4, test_errors_4, train_errors_4, times_4 = K_async_SGD(K=4)
 model_8, test_errors_8, train_errors_8, times_8 = K_async_SGD(K=8)
-model_ada, test_errors_ada, train_errors_ada, times_ada = K_async_SGD(K=1, Adaptive=True)
 
+plt.plot(times_ada, test_errors_ada, label='AdaSync')
 plt.plot(times_8, test_errors_8, label='K=8')
 plt.plot(times_4, test_errors_4, label='K=4')
 plt.plot(times_2, test_errors_2, label='K=2')
-plt.plot(times_ada, test_errors_ada, label='AdaSync')
 plt.xlabel('Training Time (seconds)')
 plt.ylabel('Test Error')
 plt.title('Test Error vs Training Time')
