@@ -39,6 +39,22 @@ def compute_total_loss(model, data_loader, criterion):
 
     return total_loss / total_samples 
 
+def compute_accuracy(model, data_loader):
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for data in data_loader:
+            images, labels = data
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    accuracy = 100 * correct // total
+
+    return accuracy
+
 train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, transform=grayscale_transform())
 train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
 test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=grayscale_transform())
@@ -64,7 +80,7 @@ class CNN(nn.Module):
         return x
 
 
-def K_async_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, shift=0.0, evaluation_interval=300, Adaptive=False):
+def K_async_SGD(K, num_steps=200000, t=60, time_budget=600, lr=0.12, scale=0.02, shift=0.0, evaluation_interval=30, Adaptive=False):
     # Initialize model, criterion, optimizer
     K0 = K
     model = CNN().to(device)
@@ -79,25 +95,46 @@ def K_async_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02,
     remaining_times = [shifted_exponential(scale, shift) for _ in range(num_workers)]
     epochs = 0
     time = 0
-    time_counter = 0
+    time_counter = time_counter_1 = 0
     test_errors = []
     train_errors = []
     times = []
+    test_accuracies = []
+    train_accuracies = []
     stale_gradients = [None for _ in range(num_workers)]
+
+    test_error = compute_total_loss(model, test_loader, criterion)
+    test_errors.append(test_error)
+    train_error = compute_total_loss(model, train_loader, criterion)
+    train_errors.append(train_error)
+    times.append(time)
+    test_accuracy = compute_accuracy(model, test_loader)
+    print(f'Test Accuracy: {test_accuracy}%')
+    train_accuracy = compute_accuracy(model, train_loader)
+    print(f'Train Accuracy: {train_accuracy}%')
+    test_accuracies.append(test_accuracy)
+    train_accuracies.append(train_accuracy)
 
     # Training loop
     for step in range(num_steps):
         end_of_epoch = False
         if time <= time_budget:
             # Periodically evaluate the model
-            if step % evaluation_interval == 0:
+            if time_counter_1 > evaluation_interval:
                 test_error = compute_total_loss(model, test_loader, criterion)
                 test_errors.append(test_error)
+                test_accuracy = compute_accuracy(model, test_loader)
+                test_accuracies.append(test_accuracy)
+                print(f'Test Accuracy: {test_accuracy}%')
+                train_accuracy = compute_accuracy(model, train_loader)
+                train_accuracies.append(train_accuracy)
+                print(f'Train Accuracy: {train_accuracy}%')
                 times.append(time)
-                print(f"Step: {step}, Time: {time}, Test Error: {test_error}")
+                print(f"Time: {time}, Test Error: {test_error}")
                 train_error = compute_total_loss(model, train_loader, criterion)
                 train_errors.append(train_error)
-                print(f"Step: {step}, Time: {time}, Train Error: {train_error}")
+                print(f"Time: {time}, Train Error: {train_error}")
+                time_counter_1 = 0
                 model.train()
 
             # Identify the K workers with the least remaining time
@@ -106,24 +143,23 @@ def K_async_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02,
             stale_workers = srt[K:]
             curr_iter_time = remaining_times[fastest_workers[K-1]] # time at which the K-th worker finishes
             time_counter += curr_iter_time # Add to time counter
+            time_counter_1 += curr_iter_time
             time += curr_iter_time
 
             # Update K if Adaptive is True and conditions are met
             if Adaptive and time_counter > t and K < num_workers:
                 current_loss = compute_total_loss(model, train_loader, criterion)
-                print(f'Current Loss: {current_loss}')
                 K = round(K0 * np.sqrt(w0_loss / current_loss))
                 if K >= 8:
                     K = 8
-                wstart = model.state_dict()  # Update wstart
-                wstart_loss = current_loss
                 time_counter = 0 # Reset time counter
                 print(f'K: {K}')
 
+            optimizer.zero_grad()
             # K fastest workers push their updates
             for worker in fastest_workers:
                 remaining_times[worker] = 0
-                optimizer.zero_grad()
+                
                 # Compute and apply fresh gradient
                 if worker not in stale_workers or stale_gradients[worker] is None:
                     try:
@@ -206,13 +242,14 @@ def K_async_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02,
     accuracy = 100 * correct // total
     print(f'Accuracy of the network on the 10000 test images: {accuracy} %')
 
-    return model, test_errors, train_errors, times
+    return model, test_errors, train_errors, test_accuracies, train_accuracies,  times
 
 # Compare the performances
-model_ada, test_errors_ada, train_errors_ada, times_ada = K_async_SGD(K=1, Adaptive=True)
-model_2, test_errors_2, train_errors_2, times_2 = K_async_SGD(K=2)
-model_4, test_errors_4, train_errors_4, times_4 = K_async_SGD(K=4)
-model_8, test_errors_8, train_errors_8, times_8 = K_async_SGD(K=8)
+model_ada, test_errors_ada, train_errors_ada, test_accuracies_ada, train_accuracies_ada,times_ada = K_async_SGD(K=1, Adaptive=True)
+model_2, test_errors_2, train_errors_2,test_accuracies_2, train_accuracies_2, times_2 = K_async_SGD(K=2)
+model_4, test_errors_4, train_errors_4, test_accuracies_4, train_accuracies_4, times_4 = K_async_SGD(K=4)
+model_8, test_errors_8, train_errors_8, test_accuracies_8, train_accuracies_8, times_8 = K_async_SGD(K=8)
+
 
 plt.plot(times_ada, test_errors_ada, label='AdaSync')
 plt.plot(times_8, test_errors_8, label='K=8')
@@ -222,4 +259,35 @@ plt.xlabel('Training Time (seconds)')
 plt.ylabel('Test Error')
 plt.title('Test Error vs Training Time')
 plt.legend()
-plt.show() 
+plt.show()
+
+plt.plot(times_ada, train_errors_ada, label='AdaSync')
+plt.plot(times_8, train_errors_8, label='K=8')
+plt.plot(times_4, train_errors_4, label='K=4')
+plt.plot(times_2, train_errors_2, label='K=2')
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Train Error')
+plt.title('Train Error vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, test_accuracies_ada, label='AdaSync')
+plt.plot(times_8, test_accuracies_8, label='K=8')
+plt.plot(times_4, test_accuracies_4, label='K=4')
+plt.plot(times_2, test_accuracies_2, label='K=2')
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Test Accuracy')
+plt.title('Test Accuracy vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, train_accuracies_ada, label='AdaSync')
+plt.plot(times_8, train_accuracies_8, label='K=8')
+plt.plot(times_4, train_accuracies_4, label='K=4')
+plt.plot(times_2, train_accuracies_2, label='K=2')
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Train Accuracy')
+plt.title('Train Accuracy vs Training Time')
+plt.legend()
+plt.show()
+

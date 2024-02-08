@@ -1,4 +1,5 @@
 import math
+import time
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +8,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, Subset
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 num_workers = 8
 batch_size = 32
@@ -31,17 +33,17 @@ test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=Fa
 class CNN(nn.Module):
     def __init__(self):
         super(CNN, self).__init__()
-        self.conv1 = nn.Conv2d(3, 6, 5)  # Input channels: 3, Output channels: 6, Kernel size: 5
-        self.pool = nn.MaxPool2d(2, 2)   # Max pooling with kernel size 2 and stride 2
-        self.conv2 = nn.Conv2d(6, 16, 5) # Input channels: 6, Output channels: 16, Kernel size: 5
-        self.fc1 = nn.Linear(16 * 5 * 5, 120)  # Flattened size: 16*5*5, Output size: 120
-        self.fc2 = nn.Linear(120, 84)    # Input size: 120, Output size: 84
-        self.fc3 = nn.Linear(84, 10)      # Input size: 84, Output size: 3 (number of classes)
+        self.conv1 = nn.Conv2d(3, 16, 5)  
+        self.pool = nn.MaxPool2d(2, 2)   
+        self.conv2 = nn.Conv2d(16, 32, 5) 
+        self.fc1 = nn.Linear(32 * 5 * 5, 120)  
+        self.fc2 = nn.Linear(120, 84)   
+        self.fc3 = nn.Linear(84, 10)      
 
     def forward(self, x):
         x = self.pool(F.relu(self.conv1(x)))
         x = self.pool(F.relu(self.conv2(x)))
-        x = x.view(-1, 16 * 5 * 5)  # Flatten the tensor
+        x = x.view(-1, 32 * 5 * 5)  # Flatten the tensor
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
@@ -63,6 +65,22 @@ def compute_total_loss(model, data_loader, criterion):
         total_samples += inputs.size(0)
 
     return total_loss / total_samples 
+
+def compute_accuracy(model, data_loader):
+    model.eval()
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for data in data_loader:
+            images, labels = data
+            outputs = model(images)
+            _, predicted = torch.max(outputs.data, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+
+    accuracy = 100 * correct // total
+
+    return accuracy
 
 def solve_quadratic(a, b, c):
     # Calculate the discriminant
@@ -86,36 +104,61 @@ def solve_quadratic(a, b, c):
     return roots if roots else "No positive roots"
 
 
-def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, shift=0.0, evaluation_interval=300, Adaptive=False):
+def K_sync_SGD(K, num_steps=20000000, t=5, time_budget=100, lr=0.12, scale=0.02 , shift=0.0, evaluation_interval=5, Adaptive=False):
     # Initialize model, criterion, optimizer
     K0 = K
     model = CNN().to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=lr)
+    # Initialize LR scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=1, threshold=0.01)
     w0_loss = compute_total_loss(model, train_loader, criterion)
-    wstart_loss = w0_loss
-    wstart = model.state_dict()
-
+    print(f'Initial Loss: {w0_loss}')
+    
     # Initialize variables
     train_loader_iter = iter(train_loader)
     epochs = 0
-    time = 0
-    time_counter = 0
+    runtime = 0
+    time_counter = time_counter_1 = 0
     test_errors = []
     train_errors = []
     times = []
+    test_accuracies = []
+    train_accuracies = []
 
+    test_error = compute_total_loss(model, test_loader, criterion)
+    test_errors.append(test_error)
+    train_error = compute_total_loss(model, train_loader, criterion)
+    train_errors.append(train_error)
+    times.append(runtime)
+    test_accuracy = compute_accuracy(model, test_loader)
+    print(f'Test Accuracy: {test_accuracy}%')
+    train_accuracy = compute_accuracy(model, train_loader)
+    print(f'Train Accuracy: {train_accuracy}%')
+    test_accuracies.append(test_accuracy)
+    train_accuracies.append(train_accuracy)
     # Training loop
     for step in range(num_steps):
-        if time < time_budget:
-            if step % evaluation_interval == 0:
+ 
+        if runtime < time_budget:
+            if time_counter_1 > evaluation_interval :
                 test_error = compute_total_loss(model, test_loader, criterion)
+                scheduler.step(test_error)
+                current_lr = optimizer.param_groups[0]['lr']
+                print(f'Current learning rate: {current_lr}')
                 test_errors.append(test_error)
-                times.append(time)
-                print(f"Step: {step}, Time: {time}, Test Error: {test_error}")
+                test_accuracy = compute_accuracy(model, test_loader)
+                test_accuracies.append(test_accuracy)
+                print(f'Test Accuracy: {test_accuracy}%')
+                train_accuracy = compute_accuracy(model, train_loader)
+                train_accuracies.append(train_accuracy)
+                print(f'Train Accuracy: {train_accuracy}%')
+                times.append(runtime)
+                print(f"Time: {runtime}, Test Error: {test_error}")
                 train_error = compute_total_loss(model, train_loader, criterion)
                 train_errors.append(train_error)
-                print(f"Step: {step}, Time: {time}, Train Error: {train_error}")
+                print(f"Time: {runtime}, Train Error: {train_error}")
+                time_counter_1 = 0
                 model.train()
 
 
@@ -126,12 +169,14 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
                 a = 1 
                 b = K0**2 * w0_loss / ((num_workers - K0) * current_loss)
                 c = -K0**2 * w0_loss * num_workers / ((num_workers - K0) * current_loss)
+                #b = K0**2 * wstart_loss / ((num_workers - K0) * current_loss)
+                #c = -K0**2 * wstart_loss * num_workers / ((num_workers - K0) * current_loss)
                 roots = solve_quadratic(a, b, c)
+                print(f'Roots: {roots}')
                 if isinstance(roots, list) and roots:
                     K = round(min(roots))
                     K = min(K, num_workers)  # Ensure K does not exceed num_workers
-                wstart = model.state_dict()
-                wstart_loss = current_loss
+                print(f'K: {K}')
                 time_counter = 0
 
             # Identify the K workers with the least remaining time
@@ -139,12 +184,14 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
             fastest_workers = np.argsort(remaining_times)[:K]
             curr_iter_time = remaining_times[fastest_workers[K-1]]
             time_counter += curr_iter_time
-            time += curr_iter_time
-
+            time_counter_1 += curr_iter_time
+            runtime += curr_iter_time
+            
+            optimizer.zero_grad()
             # K fastest workers push their updates
             for worker in fastest_workers:
                 remaining_times[worker] = 0
-                optimizer.zero_grad()
+                
                 try:
                     batch_x, batch_y = next(train_loader_iter)
                 except StopIteration:
@@ -152,10 +199,16 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
                     train_loader_iter = iter(train_loader)
                     batch_x, batch_y = next(train_loader_iter)
 
+
                 outputs = model(batch_x)
                 loss = criterion(outputs, batch_y) / K
                 loss.backward()
+
+                
+                
+            # Update the main server
             optimizer.step()
+
 
     # Final evaluation of the model
     model.eval()
@@ -172,13 +225,55 @@ def K_sync_SGD(K, num_steps=200000, t=60, time_budget=100, lr=0.12, scale=0.02, 
     accuracy = 100 * correct // total
     print(f'Accuracy of the network on the 10000 test images: {accuracy} %')
 
-    return model, test_errors, train_errors, times
+    return model, test_errors, train_errors, test_accuracies, train_accuracies, times
 
 # Compare the performances
-model_ada, test_errors_ada, train_errors_ada, times_ada = K_sync_SGD(K=1, Adaptive=True)
-model_2, test_errors_2, train_errors_2, times_2 = K_sync_SGD(K=2)
-model_4, test_errors_4, train_errors_4, times_4 = K_sync_SGD(K=4)
-model_8, test_errors_8, train_errors_8, times_8 = K_sync_SGD(K=8)
+model_ada, test_errors_ada, train_errors_ada, test_accuracies_ada, train_accuracies_ada,times_ada = K_sync_SGD(K=1, Adaptive=True)
+#model_ada1, test_errors_ada1, train_errors_ada1, test_accuracies_ada1, train_accuracies_ada1,times_ada1 = K_sync_SGD(K=1, lr=0.01, Adaptive=True)
+#model_ada2, test_errors_ada2, train_errors_ada2, test_accuracies_ada2, train_accuracies_ada2,times_ada2 = K_sync_SGD(K=1, lr=0.001, Adaptive=True)
+#plt.plot(times_ada1, test_errors_ada1, label='AdaSync, lr=0.01')
+#plt.plot(times_ada2, test_errors_ada2, label='AdaSync, lr=0.001')
+'''
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Test Error')
+plt.title('Test Error vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, train_errors_ada, label='AdaSync, lr=0.12')
+plt.plot(times_ada1, train_errors_ada1, label='AdaSync, lr=0.01')
+plt.plot(times_ada2, train_errors_ada2, label='AdaSync, lr=0.001')
+
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Train Error')
+plt.title('Train Error vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, train_accuracies_ada, label='AdaSync, lr=0.12')
+plt.plot(times_ada1, train_accuracies_ada1, label='AdaSync, lr=0.01')
+plt.plot(times_ada2, train_accuracies_ada2, label='AdaSync, lr=0.001')
+
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Train Accuracy')
+plt.title('Train Accuracy vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, test_accuracies_ada, label='AdaSync, lr=0.12')
+plt.plot(times_ada1, test_accuracies_ada1, label='AdaSync, lr=0.01')
+plt.plot(times_ada2, test_accuracies_ada2, label='AdaSync, lr=0.001')
+
+plt.xlabel('Test Time (seconds)')
+plt.ylabel('Test Accuracy')
+plt.title('Test Accuracy vs Training Time')
+plt.legend()
+plt.show()
+'''
+
+model_2, test_errors_2, train_errors_2,test_accuracies_2, train_accuracies_2, times_2 = K_sync_SGD(K=2)
+model_4, test_errors_4, train_errors_4, test_accuracies_4, train_accuracies_4, times_4 = K_sync_SGD(K=4)
+model_8, test_errors_8, train_errors_8, test_accuracies_8, train_accuracies_8, times_8 = K_sync_SGD(K=8)
 
 
 plt.plot(times_ada, test_errors_ada, label='AdaSync')
@@ -190,6 +285,37 @@ plt.ylabel('Test Error')
 plt.title('Test Error vs Training Time')
 plt.legend()
 plt.show()
+
+plt.plot(times_ada, train_errors_ada, label='AdaSync')
+plt.plot(times_8, train_errors_8, label='K=8')
+plt.plot(times_4, train_errors_4, label='K=4')
+plt.plot(times_2, train_errors_2, label='K=2')
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Train Error')
+plt.title('Train Error vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, test_accuracies_ada, label='AdaSync')
+plt.plot(times_8, test_accuracies_8, label='K=8')
+plt.plot(times_4, test_accuracies_4, label='K=4')
+plt.plot(times_2, test_accuracies_2, label='K=2')
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Test Accuracy')
+plt.title('Test Accuracy vs Training Time')
+plt.legend()
+plt.show()
+
+plt.plot(times_ada, train_accuracies_ada, label='AdaSync')
+plt.plot(times_8, train_accuracies_8, label='K=8')
+plt.plot(times_4, train_accuracies_4, label='K=4')
+plt.plot(times_2, train_accuracies_2, label='K=2')
+plt.xlabel('Training Time (seconds)')
+plt.ylabel('Train Accuracy')
+plt.title('Train Accuracy vs Training Time')
+plt.legend()
+plt.show()
+
 
 
 
